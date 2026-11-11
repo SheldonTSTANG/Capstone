@@ -779,7 +779,6 @@
     <header class="navbar">
         <div class="navbar-brand">
             Student-Athlete Integrated Scheduler
-            <span>SAIS UNIFIED</span>
         </div>
 
         <div class="user-profile">
@@ -807,7 +806,7 @@
         <!-- 1. LOGIN CARD -->
         <div id="login-card" class="auth-card">
             <h2>Log In to SAIS</h2>
-            <p>Access your student-athlete schedules, team sport sessions, and department calendar.</p>
+            <p>Access your schedules, practices, and calendar.</p>
 
             <form onsubmit="handleLogin(event)" novalidate>
                 <label class="form-label">Email Address</label>
@@ -1130,11 +1129,6 @@
                     </label>
                 </div>
             </div>
-
-            <div class="filter-section">
-                <h4>Upcoming Agenda</h4>
-                <div class="upcoming-feed" id="agenda-feed"></div>
-            </div>
         </aside>
 
         <section class="calendar-wrapper">
@@ -1155,11 +1149,6 @@
                 <div class="toolbar-group">
                     <button class="btn btn-primary" onclick="loadClassesFromDatabase()">Refresh Schedule</button>
                 </div>
-            </div>
-
-            <!-- Summary Course & Sport Pills Bar (Matches Reference Screenshot) -->
-            <div class="schedule-pills-bar" id="schedule-pills-bar">
-                <span class="pills-bar-label">Scheduled Sessions:</span>
             </div>
 
             <!-- 1. WEEK VIEW (Fixed Header + Scrollable 24-Hour Time Grid Box) -->

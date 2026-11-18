@@ -17,11 +17,10 @@ app.use(express.static(__dirname));
 
 // Automatically serve final_3.html (or final.html if renamed)
 app.get('/', (req, res) => {
-    const file3 = path.join(__dirname, 'final_3.html');
     if (fs.existsSync(file3)) {
         return res.sendFile(file3);
     }
-    res.sendFile(path.join(__dirname, 'final.html'));
+    res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // =========================================================

@@ -416,7 +416,7 @@
             font-weight: 600;
         }
 
-        /* Active Course / Sport Pill Strip (matches registration screenshot) */
+        /* Active Course / Sport Pill Strip */
         .schedule-pills-bar {
             flex-shrink: 0;
             margin: 10px 0;
@@ -464,7 +464,7 @@
         }
 
         /* =========================================================
-           SCROLLABLE CALENDAR BOX (MATCHES REFERENCE SCREENSHOT)
+           SCROLLABLE CALENDAR BOX
            ========================================================= */
         #week-view-container {
             flex: 1;
@@ -483,7 +483,6 @@
             grid-template-columns: 76px repeat(7, 1fr);
             background: var(--header-cell-bg);
             border-bottom: 1px solid var(--border-color);
-            /* Reserve 16px on right so columns align with scrollbar below */
             padding-right: 16px;
             flex-shrink: 0;
         }
@@ -527,7 +526,6 @@
             background: var(--bg-card);
         }
 
-        /* Always-visible classic scrollbar on right side of calendar */
         .calendar-scroll-box::-webkit-scrollbar {
             width: 16px;
         }
@@ -564,7 +562,6 @@
             user-select: none;
             border-right: 1px solid var(--grid-line);
             border-bottom: 1px solid var(--grid-line);
-            /* Half-hour sub-row tick line inside time label column */
             background-image: linear-gradient(to bottom,
                     transparent calc(50% - 0.5px),
                     var(--sub-grid-line) calc(50% - 0.5px),
@@ -577,7 +574,6 @@
             position: relative;
             border-right: 1px solid var(--grid-line);
             border-bottom: 1px solid var(--grid-line);
-            /* Half-hour horizontal divider line matching screenshot */
             background-image: linear-gradient(to bottom,
                     transparent calc(50% - 0.5px),
                     var(--sub-grid-line) calc(50% - 0.5px),
@@ -779,6 +775,7 @@
     <header class="navbar">
         <div class="navbar-brand">
             Student-Athlete Integrated Scheduler
+            <span>SAIS UNIFIED</span>
         </div>
 
         <div class="user-profile">
@@ -806,12 +803,12 @@
         <!-- 1. LOGIN CARD -->
         <div id="login-card" class="auth-card">
             <h2>Log In to SAIS</h2>
-            <p>Access your schedules, practices, and calendar.</p>
+            <p>Access your student-athlete schedules, team sport sessions, and department calendar.</p>
 
             <form onsubmit="handleLogin(event)" novalidate>
                 <label class="form-label">Email Address</label>
                 <input type="email" id="login-email" class="form-control" placeholder="user@university.edu"
-                    value="">
+                    value="coach_smith@university.edu">
 
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                     <label class="form-label" style="margin: 0;">Password</label>
@@ -820,7 +817,7 @@
                         password?</a>
                 </div>
                 <input type="password" id="login-password" class="form-control" placeholder="Enter password"
-                    value="">
+                    value="password123">
 
                 <div id="login-error"
                     style="color: var(--color-conflict); font-size: 13px; font-weight: bold; margin-bottom: 12px;">
@@ -1041,6 +1038,15 @@
 
     <main class="workspace" id="main-workspace">
         <aside class="sidebar">
+            <!-- Facility Utilization & Conflict Reporting (Coach & Admin) -->
+            <div class="filter-section" id="utilization-report-section" style="display: none;">
+                <h4>Facility Utilization & Conflicts</h4>
+                <div id="utilization-summary"
+                    style="background: var(--bg-canvas); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; font-size: 12px;">
+                    Loading metrics...
+                </div>
+            </div>
+
             <!-- Coach / Admin Sport Schedule Builder -->
             <div class="filter-section" id="coach-schedule-builder" style="display: none;">
                 <h4>Add Sport Schedule</h4>
@@ -1129,6 +1135,11 @@
                     </label>
                 </div>
             </div>
+
+            <div class="filter-section">
+                <h4>Upcoming Agenda</h4>
+                <div class="upcoming-feed" id="agenda-feed"></div>
+            </div>
         </aside>
 
         <section class="calendar-wrapper">
@@ -1149,6 +1160,11 @@
                 <div class="toolbar-group">
                     <button class="btn btn-primary" onclick="loadClassesFromDatabase()">Refresh Schedule</button>
                 </div>
+            </div>
+
+            <!-- Summary Course & Sport Pills Bar -->
+            <div class="schedule-pills-bar" id="schedule-pills-bar">
+                <span class="pills-bar-label">Scheduled Sessions:</span>
             </div>
 
             <!-- 1. WEEK VIEW (Fixed Header + Scrollable 24-Hour Time Grid Box) -->
@@ -1712,6 +1728,40 @@
             }
         }
 
+        async function loadUtilizationReport() {
+            const section = document.getElementById('utilization-report-section');
+            const box = document.getElementById('utilization-summary');
+            if (!section || !box) return;
+
+            if (currentUser.role !== 'admin' && currentUser.role !== 'coach') {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+
+            try {
+                const res = await fetch('/facility-utilization', {
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                if (!res.ok) return;
+                const data = await res.json();
+
+                const teamRows = (data.utilizationByTeam || []).map(t =>
+                    `<div style="margin-bottom:4px;"><strong>${t.team_name}:</strong> ${t.total_hours} hrs/wk (${t.total_sessions} sessions)</div>`
+                ).join('') || '<div>No facility bookings yet.</div>';
+
+                const conflictCount = (data.conflicts || []).length;
+                const conflictBadge = conflictCount > 0
+                    ? `<div style="margin-top:8px; color:var(--color-conflict); font-weight:700;">⚠️ ${conflictCount} Class/Practice Overlap(s)</div>`
+                    : `<div style="margin-top:8px; color:var(--color-sport); font-weight:700;">✓ 0 Schedule Conflicts</div>`;
+
+                box.innerHTML = teamRows + conflictBadge;
+            } catch (err) {
+                console.error('Failed to load utilization report:', err);
+            }
+        }
+
         function updateUIState(isLoggedIn) {
             const authScreen = document.getElementById('auth-screen');
             const mainWorkspace = document.getElementById('main-workspace');
@@ -1721,6 +1771,7 @@
             const teamFilterSection = document.getElementById('team-filter-section');
             const coachBuilder = document.getElementById('coach-schedule-builder');
             const sidebarTeamPicker = document.getElementById('sidebar-team-picker-wrap');
+            const utilSection = document.getElementById('utilization-report-section');
 
             if (isLoggedIn) {
                 authScreen.style.display = 'none';
@@ -1740,16 +1791,19 @@
                     rosterFilterSection.style.display = 'none';
                     teamFilterSection.style.display = 'none';
                     coachBuilder.style.display = 'none';
+                    if (utilSection) utilSection.style.display = 'none';
                 } else if (currentUser.role === 'coach') {
                     rosterFilterSection.style.display = 'block';
                     teamFilterSection.style.display = 'none';
                     coachBuilder.style.display = 'block';
                     sidebarTeamPicker.style.display = 'none';
+                    if (utilSection) utilSection.style.display = 'block';
                 } else if (currentUser.role === 'admin') {
                     rosterFilterSection.style.display = 'block';
                     teamFilterSection.style.display = 'block';
                     coachBuilder.style.display = 'block';
                     sidebarTeamPicker.style.display = 'block';
+                    if (utilSection) utilSection.style.display = 'block';
                 }
 
                 document.getElementById('roster-select').value = 'ALL';
@@ -1920,6 +1974,9 @@
                 } else {
                     renderEvents();
                 }
+
+                // Trigger the Facility Utilization & Conflict Report on login & refresh
+                loadUtilizationReport();
             } catch (err) {
                 console.error("Failed to load records:", err);
             }

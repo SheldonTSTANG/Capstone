@@ -94,7 +94,7 @@ function saveLocalStore(data) {
 }
 
 async function initDatabase() {
-    // 1. Connect to Railway PostgreSQL when DATABASE_URL is present
+    // 1. Connect to Railway PostgreSQL first
     if (process.env.DATABASE_URL) {
         try {
             const cloudPool = new Pool({
@@ -110,6 +110,8 @@ async function initDatabase() {
                     role VARCHAR(50) NOT NULL,
                     team_name VARCHAR(100)
                 );
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS team_name VARCHAR(100);
+
                 CREATE TABLE IF NOT EXISTS student_athletes (
                     id SERIAL PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -118,6 +120,8 @@ async function initDatabase() {
                     team_name VARCHAR(100),
                     jersey_number INT
                 );
+                ALTER TABLE student_athletes ADD COLUMN IF NOT EXISTS jersey_number INT;
+
                 CREATE TABLE IF NOT EXISTS student_classes (
                     id SERIAL PRIMARY KEY,
                     student_id TEXT NOT NULL,
@@ -126,6 +130,9 @@ async function initDatabase() {
                     class_start TIMESTAMPTZ,
                     class_end TIMESTAMPTZ
                 );
+                ALTER TABLE student_classes ADD COLUMN IF NOT EXISTS class_start TIMESTAMPTZ;
+                ALTER TABLE student_classes ADD COLUMN IF NOT EXISTS class_end TIMESTAMPTZ;
+
                 CREATE TABLE IF NOT EXISTS sport_schedules (
                     id SERIAL PRIMARY KEY,
                     coach_id TEXT,
@@ -141,14 +148,14 @@ async function initDatabase() {
             console.log('Connected to Railway PostgreSQL successfully.');
             return;
         } catch (err) {
-            console.error('Railway DATABASE_URL connection error:', err.message);
+            console.error('Failed to connect via DATABASE_URL:', err.message);
         }
     }
 
     // 2. Fallback to local JSON store if no database is reachable
     useLocalStore = true;
     loadLocalStore();
-    console.log('Using local sais_data.json store.');
+    console.log('Using local sais_data.json store so registration, login, and schedules work seamlessly.');
 }
 // =========================================================
 // 2. AUTH & DATA VALIDATION HELPERS

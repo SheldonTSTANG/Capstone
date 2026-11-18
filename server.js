@@ -21,7 +21,7 @@ app.get('/', (req, res) => {
     if (fs.existsSync(file3)) {
         return res.sendFile(file3);
     }
-    res.sendFile(path.join(__dirname, 'index.html'));
+    res.sendFile(path.join(__dirname, 'final.html'));
 });
 
 // =========================================================
@@ -95,7 +95,7 @@ function saveLocalStore(data) {
 }
 
 async function initDatabase() {
-    // 1. Railway / Cloud DATABASE_URL
+    // 1. Connect to Railway PostgreSQL when DATABASE_URL is present
     if (process.env.DATABASE_URL) {
         try {
             const cloudPool = new Pool({
@@ -103,57 +103,54 @@ async function initDatabase() {
                 ssl: { rejectUnauthorized: false }
             });
             const client = await cloudPool.connect();
-            await client.query(SCHEMA_SQL);
+            await client.query(`
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    email VARCHAR(255) UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    role VARCHAR(50) NOT NULL,
+                    team_name VARCHAR(100)
+                );
+                CREATE TABLE IF NOT EXISTS student_athletes (
+                    id SERIAL PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    first_name VARCHAR(100) NOT NULL,
+                    last_name VARCHAR(100) NOT NULL,
+                    team_name VARCHAR(100),
+                    jersey_number INT
+                );
+                CREATE TABLE IF NOT EXISTS student_classes (
+                    id SERIAL PRIMARY KEY,
+                    student_id TEXT NOT NULL,
+                    course_code VARCHAR(50) NOT NULL,
+                    course_name VARCHAR(255) NOT NULL,
+                    class_start TIMESTAMPTZ,
+                    class_end TIMESTAMPTZ
+                );
+                CREATE TABLE IF NOT EXISTS sport_schedules (
+                    id SERIAL PRIMARY KEY,
+                    coach_id TEXT,
+                    team_name VARCHAR(100) NOT NULL,
+                    event_title VARCHAR(255) NOT NULL,
+                    class_start TIMESTAMPTZ NOT NULL,
+                    class_end TIMESTAMPTZ NOT NULL
+                );
+            `);
             client.release();
             pool = cloudPool;
             useLocalStore = false;
             console.log('Connected to Railway PostgreSQL successfully.');
             return;
         } catch (err) {
-            console.error('Failed to connect via DATABASE_URL:', err.message);
+            console.error('Railway DATABASE_URL connection error:', err.message);
         }
     }
 
-    // 2. Local Windows PostgreSQL
-    const candidatePasswords = [
-        process.env.DB_PASSWORD,
-        'EsportsisSport#1',
-        'postgres',
-        '',
-        'password',
-        'admin'
-    ].filter(p => p !== undefined);
-
-    for (const pwd of candidatePasswords) {
-        const cleanPwd = String(pwd).replace(/^["']|["']$/g, '');
-        const testPool = new Pool({
-            user: process.env.DB_USER || 'postgres',
-            host: process.env.DB_HOST || 'localhost',
-            database: process.env.DB_NAME || 'postgres',
-            password: cleanPwd,
-            port: parseInt(process.env.DB_PORT, 10) || 5432,
-            connectionTimeoutMillis: 1500,
-        });
-
-        try {
-            const client = await testPool.connect();
-            await client.query(SCHEMA_SQL);
-            client.release();
-            pool = testPool;
-            useLocalStore = false;
-            console.log('Connected to local PostgreSQL successfully.');
-            return;
-        } catch (err) {
-            await testPool.end().catch(() => { });
-        }
-    }
-
-    // 3. Fallback JSON Store
+    // 2. Fallback to local JSON store if no database is reachable
     useLocalStore = true;
     loadLocalStore();
-    console.log('Using local sais_data.json store so registration, login, and schedules work seamlessly.');
+    console.log('Using local sais_data.json store.');
 }
-
 // =========================================================
 // 2. AUTH & DATA VALIDATION HELPERS
 // =========================================================

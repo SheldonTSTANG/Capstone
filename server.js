@@ -15,16 +15,62 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
+// Automatically serve final_3.html (or final.html if renamed)
 app.get('/', (req, res) => {
+    const file3 = path.join(__dirname, 'final_3.html');
+    if (fs.existsSync(file3)) {
+        return res.sendFile(file3);
+    }
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // =========================================================
-// 1. AUTO-DETECT POSTGRESQL OR FALLBACK TO LOCAL JSON STORE
+// 1. AUTO-DETECT RAILWAY DATABASE_URL, LOCAL PG, OR JSON STORE
 // =========================================================
 let pool = null;
 let useLocalStore = false;
 const LOCAL_DB_FILE = path.join(__dirname, 'sais_data.json');
+
+const SCHEMA_SQL = `
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role VARCHAR(50) NOT NULL,
+        team_name VARCHAR(100)
+    );
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS team_name VARCHAR(100);
+
+    CREATE TABLE IF NOT EXISTS student_athletes (
+        id SERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        first_name VARCHAR(100) NOT NULL,
+        last_name VARCHAR(100) NOT NULL,
+        team_name VARCHAR(100),
+        jersey_number INT
+    );
+    ALTER TABLE student_athletes ADD COLUMN IF NOT EXISTS jersey_number INT;
+
+    CREATE TABLE IF NOT EXISTS student_classes (
+        id SERIAL PRIMARY KEY,
+        student_id TEXT NOT NULL,
+        course_code VARCHAR(50) NOT NULL,
+        course_name VARCHAR(255) NOT NULL,
+        class_start TIMESTAMPTZ,
+        class_end TIMESTAMPTZ
+    );
+    ALTER TABLE student_classes ADD COLUMN IF NOT EXISTS class_start TIMESTAMPTZ;
+    ALTER TABLE student_classes ADD COLUMN IF NOT EXISTS class_end TIMESTAMPTZ;
+
+    CREATE TABLE IF NOT EXISTS sport_schedules (
+        id SERIAL PRIMARY KEY,
+        coach_id TEXT,
+        team_name VARCHAR(100) NOT NULL,
+        event_title VARCHAR(255) NOT NULL,
+        class_start TIMESTAMPTZ NOT NULL,
+        class_end TIMESTAMPTZ NOT NULL
+    );
+`;
 
 function loadLocalStore() {
     if (!fs.existsSync(LOCAL_DB_FILE)) {
@@ -49,6 +95,26 @@ function saveLocalStore(data) {
 }
 
 async function initDatabase() {
+    // 1. Railway / Cloud DATABASE_URL
+    if (process.env.DATABASE_URL) {
+        try {
+            const cloudPool = new Pool({
+                connectionString: process.env.DATABASE_URL,
+                ssl: { rejectUnauthorized: false }
+            });
+            const client = await cloudPool.connect();
+            await client.query(SCHEMA_SQL);
+            client.release();
+            pool = cloudPool;
+            useLocalStore = false;
+            console.log('Connected to Railway PostgreSQL successfully.');
+            return;
+        } catch (err) {
+            console.error('Failed to connect via DATABASE_URL:', err.message);
+        }
+    }
+
+    // 2. Local Windows PostgreSQL
     const candidatePasswords = [
         process.env.DB_PASSWORD,
         'EsportsisSport#1',
@@ -71,63 +137,25 @@ async function initDatabase() {
 
         try {
             const client = await testPool.connect();
-            await client.query(`
-                CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
-                    email VARCHAR(255) UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    role VARCHAR(50) NOT NULL,
-                    team_name VARCHAR(100)
-                );
-                ALTER TABLE users ADD COLUMN IF NOT EXISTS team_name VARCHAR(100);
-
-                CREATE TABLE IF NOT EXISTS student_athletes (
-                    id SERIAL PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    first_name VARCHAR(100) NOT NULL,
-                    last_name VARCHAR(100) NOT NULL,
-                    team_name VARCHAR(100),
-                    jersey_number INT
-                );
-                ALTER TABLE student_athletes ADD COLUMN IF NOT EXISTS jersey_number INT;
-
-                CREATE TABLE IF NOT EXISTS student_classes (
-                    id SERIAL PRIMARY KEY,
-                    student_id TEXT NOT NULL,
-                    course_code VARCHAR(50) NOT NULL,
-                    course_name VARCHAR(255) NOT NULL,
-                    class_start TIMESTAMPTZ,
-                    class_end TIMESTAMPTZ
-                );
-                ALTER TABLE student_classes ADD COLUMN IF NOT EXISTS class_start TIMESTAMPTZ;
-                ALTER TABLE student_classes ADD COLUMN IF NOT EXISTS class_end TIMESTAMPTZ;
-
-                CREATE TABLE IF NOT EXISTS sport_schedules (
-                    id SERIAL PRIMARY KEY,
-                    coach_id TEXT,
-                    team_name VARCHAR(100) NOT NULL,
-                    event_title VARCHAR(255) NOT NULL,
-                    class_start TIMESTAMPTZ NOT NULL,
-                    class_end TIMESTAMPTZ NOT NULL
-                );
-            `);
+            await client.query(SCHEMA_SQL);
             client.release();
             pool = testPool;
             useLocalStore = false;
-            console.log('Connected to PostgreSQL successfully.');
+            console.log('Connected to local PostgreSQL successfully.');
             return;
         } catch (err) {
             await testPool.end().catch(() => { });
         }
     }
 
+    // 3. Fallback JSON Store
     useLocalStore = true;
     loadLocalStore();
     console.log('Using local sais_data.json store so registration, login, and schedules work seamlessly.');
 }
 
 // =========================================================
-// 2. AUTH HELPERS & MIDDLEWARE
+// 2. AUTH & DATA VALIDATION HELPERS
 // =========================================================
 async function hashPassword(plainPassword) {
     return await bcrypt.hash(plainPassword, 10);
@@ -154,8 +182,29 @@ function authenticateToken(req, res, next) {
     });
 }
 
+function validateScheduleBlocks(blocks, label = 'Schedule') {
+    if (!Array.isArray(blocks) || blocks.length === 0) {
+        return `${label} must include at least one valid time block.`;
+    }
+    for (const block of blocks) {
+        const start = new Date(block.classStart);
+        const end = new Date(block.classEnd);
+        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+            return `${label} contains an invalid timestamp.`;
+        }
+        if (end <= start) {
+            return `${label} end time must be after start time.`;
+        }
+        const durationHours = (end - start) / (1000 * 60 * 60);
+        if (durationHours > 8) {
+            return `${label} block cannot exceed 8 continuous hours.`;
+        }
+    }
+    return null;
+}
+
 // =========================================================
-// 3. REGISTER ENDPOINT (COACH, ADMIN, STUDENT-ATHLETE)
+// 3. REGISTER ENDPOINT (WITH MILESTONE 13 DATA VALIDATION)
 // =========================================================
 app.post('/register', async (req, res) => {
     const { email, password, role, firstName, lastName, teamName, jerseyNumber, classes, sportSchedules } = req.body;
@@ -167,6 +216,14 @@ app.post('/register', async (req, res) => {
     const allowedRoles = ['coach', 'admin', 'student_athlete'];
     if (!allowedRoles.includes(role)) {
         return res.status(400).json({ error: 'Invalid system role selected.' });
+    }
+
+    if (role === 'student_athlete') {
+        const validationErr = validateScheduleBlocks(classes, 'Academic class schedule');
+        if (validationErr) return res.status(400).json({ error: validationErr });
+    } else if (role === 'coach' && Array.isArray(sportSchedules) && sportSchedules.length > 0) {
+        const validationErr = validateScheduleBlocks(sportSchedules, 'Team sport schedule');
+        if (validationErr) return res.status(400).json({ error: validationErr });
     }
 
     const cleanEmail = email.trim().toLowerCase();
@@ -386,7 +443,7 @@ app.post('/reset-password', async (req, res) => {
 });
 
 // =========================================================
-// 6. ADD SPORT SCHEDULE ENDPOINT (COACH & ADMIN)
+// 6. ADD SPORT SCHEDULE ENDPOINT (WITH VALIDATION)
 // =========================================================
 app.post('/sport-schedules', authenticateToken, async (req, res) => {
     const { userId, role, teamName: tokenTeam } = req.user;
@@ -397,8 +454,9 @@ app.post('/sport-schedules', authenticateToken, async (req, res) => {
     const { teamName, events } = req.body;
     const assignedTeam = (role === 'coach' ? (tokenTeam || teamName) : teamName) || 'Basketball';
 
-    if (!Array.isArray(events) || events.length === 0) {
-        return res.status(400).json({ error: 'Please provide at least one sport schedule event.' });
+    const validationErr = validateScheduleBlocks(events, 'Sport schedule');
+    if (validationErr) {
+        return res.status(400).json({ error: validationErr });
     }
 
     try {
@@ -447,24 +505,143 @@ app.post('/sport-schedules', authenticateToken, async (req, res) => {
 });
 
 // =========================================================
-// 7. UNIFIED SCHEDULE RETRIEVAL (CLASSES + SPORT SCHEDULES)
+// 7. FACILITY UTILIZATION & CONFLICT REPORTING ENDPOINT
 // =========================================================
-app.get('/all-classes', authenticateToken, async (req, res) => {
-    const { userId, role, teamName } = req.user;
+app.get('/facility-utilization', authenticateToken, async (req, res) => {
+    const { role, teamName } = req.user;
+    if (role !== 'admin' && role !== 'coach') {
+        return res.status(403).json({ error: 'Unauthorized for utilization reports.' });
+    }
 
     try {
         // Fallback Local Store Mode
         if (useLocalStore || !pool) {
             const store = loadLocalStore();
+            let sports = store.sport_schedules || [];
+            let athletes = store.student_athletes || [];
 
-            // Resolve student-athlete's team if needed
+            if (role === 'coach' && teamName) {
+                sports = sports.filter(s => (s.team_name || '').toLowerCase().trim() === teamName.toLowerCase().trim());
+                athletes = athletes.filter(a => (a.team_name || '').toLowerCase().trim() === teamName.toLowerCase().trim());
+            }
+
+            const teamMap = {};
+            sports.forEach(s => {
+                const tName = s.team_name || 'Basketball';
+                if (!teamMap[tName]) teamMap[tName] = { team_name: tName, total_sessions: 0, total_hours: 0, days: new Set() };
+                const dur = Math.max((new Date(s.class_end) - new Date(s.class_start)) / 3600000, 0);
+                teamMap[tName].total_sessions += 1;
+                teamMap[tName].total_hours += dur;
+                teamMap[tName].days.add(new Date(s.class_start).getDay());
+            });
+
+            const utilizationByTeam = Object.values(teamMap).map(t => ({
+                team_name: t.team_name,
+                total_sessions: t.total_sessions,
+                total_hours: Number(t.total_hours.toFixed(2)),
+                active_days: t.days.size
+            }));
+
+            const conflicts = [];
+            const athleteMap = new Map(athletes.map(a => [String(a.id), a]));
+            (store.student_classes || []).forEach(sc => {
+                const ath = athleteMap.get(String(sc.student_id));
+                if (!ath) return;
+                const cStart = new Date(sc.class_start);
+                const cEnd = new Date(sc.class_end);
+                const cDay = cStart.getDay();
+                const cS = cStart.getHours() + cStart.getMinutes() / 60;
+                const cE = cEnd.getHours() + cEnd.getMinutes() / 60;
+
+                sports.forEach(sp => {
+                    if ((sp.team_name || '').toLowerCase().trim() !== (ath.team_name || '').toLowerCase().trim()) return;
+                    const sStart = new Date(sp.class_start);
+                    const sEnd = new Date(sp.class_end);
+                    if (sStart.getDay() !== cDay) return;
+                    const sS = sStart.getHours() + sStart.getMinutes() / 60;
+                    const sE = sEnd.getHours() + sEnd.getMinutes() / 60;
+                    if (cS < sE && cE > sS) {
+                        conflicts.push({
+                            athlete_name: `${ath.first_name} ${ath.last_name}`,
+                            team_name: ath.team_name,
+                            academic_class: `${sc.course_code}: ${sc.course_name}`,
+                            sport_session: sp.event_title,
+                            day_of_week: cDay
+                        });
+                    }
+                });
+            });
+
+            return res.json({ utilizationByTeam, conflicts });
+        }
+
+        // PostgreSQL Mode
+        let utilQuery = `
+            SELECT
+                team_name,
+                COUNT(*)::INT AS total_sessions,
+                ROUND(SUM(EXTRACT(EPOCH FROM (class_end - class_start)) / 3600.0)::NUMERIC, 2) AS total_hours,
+                COUNT(DISTINCT EXTRACT(DOW FROM class_start))::INT AS active_days
+            FROM sport_schedules
+        `;
+        const params = [];
+        if (role === 'coach' && teamName) {
+            utilQuery += ` WHERE LOWER(TRIM(team_name)) = LOWER(TRIM($1))`;
+            params.push(teamName);
+        }
+        utilQuery += ` GROUP BY team_name ORDER BY total_hours DESC;`;
+
+        let conflictQuery = `
+            SELECT
+                sa.first_name || ' ' || sa.last_name AS athlete_name,
+                sa.team_name,
+                sc.course_code || ': ' || sc.course_name AS academic_class,
+                sp.event_title AS sport_session,
+                EXTRACT(DOW FROM sc.class_start)::INT AS day_of_week
+            FROM student_athletes sa
+            JOIN student_classes sc ON CAST(sc.student_id AS TEXT) = CAST(sa.id AS TEXT)
+            JOIN sport_schedules sp ON LOWER(TRIM(sp.team_name)) = LOWER(TRIM(sa.team_name))
+            WHERE EXTRACT(DOW FROM sc.class_start) = EXTRACT(DOW FROM sp.class_start)
+              AND (sc.class_start::time < sp.class_end::time)
+              AND (sc.class_end::time > sp.class_start::time)
+        `;
+        const conflictParams = [];
+        if (role === 'coach' && teamName) {
+            conflictQuery += ` AND LOWER(TRIM(sa.team_name)) = LOWER(TRIM($1))`;
+            conflictParams.push(teamName);
+        }
+
+        const [utilResult, conflictResult] = await Promise.all([
+            pool.query(utilQuery, params),
+            pool.query(conflictQuery, conflictParams)
+        ]);
+
+        res.json({
+            utilizationByTeam: utilResult.rows,
+            conflicts: conflictResult.rows
+        });
+    } catch (err) {
+        console.error('Utilization report error:', err.message);
+        res.status(500).json({ error: 'Failed to generate facility utilization report.' });
+    }
+});
+
+// =========================================================
+// 8. UNIFIED SCHEDULE RETRIEVAL (CLASSES + SPORT SCHEDULES)
+// =========================================================
+app.get('/all-classes', authenticateToken, async (req, res) => {
+    const { userId, role, teamName } = req.user;
+
+    try {
+        if (useLocalStore || !pool) {
+            const store = loadLocalStore();
+
             let effectiveTeam = teamName;
             if (role === 'student_athlete' && !effectiveTeam) {
                 const myProfile = store.student_athletes.find(sa => String(sa.user_id) === String(userId));
                 if (myProfile) effectiveTeam = myProfile.team_name;
             }
 
-            // 1. Academic Classes based on Role
             let allowedAthletes = store.student_athletes;
             if (role === 'student_athlete') {
                 allowedAthletes = store.student_athletes.filter(
@@ -475,7 +652,6 @@ app.get('/all-classes', authenticateToken, async (req, res) => {
                     sa => (sa.team_name || '').toLowerCase().trim() === effectiveTeam.toLowerCase().trim()
                 );
             }
-            // Note: role === 'admin' keeps ALL student_athletes
 
             const allowedAthleteIds = new Set(allowedAthletes.map(sa => String(sa.id)));
 
@@ -498,14 +674,12 @@ app.get('/all-classes', authenticateToken, async (req, res) => {
                     };
                 });
 
-            // 2. Sport Schedules based on Role
             let sportRecords = store.sport_schedules || [];
             if ((role === 'coach' || role === 'student_athlete') && effectiveTeam) {
                 sportRecords = sportRecords.filter(
                     sp => (sp.team_name || '').toLowerCase().trim() === effectiveTeam.toLowerCase().trim()
                 );
             }
-            // Note: role === 'admin' keeps ALL sport_schedules
 
             const formattedSports = sportRecords.map(sp => ({
                 id: sp.id,
@@ -534,7 +708,6 @@ app.get('/all-classes', authenticateToken, async (req, res) => {
             if (saRes.rows[0]) effectiveTeam = saRes.rows[0].team_name;
         }
 
-        // 1. Query Academic Classes
         let classQuery = `
             SELECT 
                 sc.id, 
@@ -565,7 +738,6 @@ app.get('/all-classes', authenticateToken, async (req, res) => {
         classQuery += ` ORDER BY sc.class_start ASC;`;
         const classResult = await pool.query(classQuery, classParams);
 
-        // 2. Query Sport Schedules
         let sportQuery = `
             SELECT
                 sp.id,
